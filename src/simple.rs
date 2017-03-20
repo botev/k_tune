@@ -18,7 +18,9 @@ pub struct SimpleBuilder {
 
 impl Default for SimpleBuilder {
     fn default() -> Self {
-        SimpleBuilder::new().value(vec![1])
+        SimpleBuilder::new()
+            .value1(vec![2])
+            .value2(vec![2])
     }
 }
 
@@ -27,15 +29,23 @@ impl SimpleBuilder {
         SimpleBuilder{parameters: HashMap::new()}
     }
 
-    pub fn value(mut self, values: Vec<usize>) -> Self {
-        self.parameters.insert("VALUE".into(), values);
+    pub fn value1(mut self, values: Vec<usize>) -> Self {
+        self.parameters.insert("VALUE1".into(), values);
         return self
     }
 
-    pub fn build(self) -> Result<ParameterSet, String> {
-        if self.parameters.get("VALUE").is_none() {
-            return Err("The Simple parameter set for 'VALUE' has not been set.".into())
+    pub fn value2(mut self, values: Vec<usize>) -> Self {
+        self.parameters.insert("VALUE2".into(), values);
+        return self
+    }
+
+    pub fn build(self) -> Result<ParameterSet<'static>, String> {
+        if self.parameters.get("VALUE1").is_none() {
+            return Err("The Simple parameter set for 'VALUE1' has not been set.".into())
         }
-        Ok(ParameterSet{parameters: self.parameters})
+        if self.parameters.get("VALUE2").is_none() {
+            return Err("The Simple parameter set for 'VALUE2' has not been set.".into())
+        }
+        Ok(ParameterSet{parameters: self.parameters, constraints: Vec::new()})
     }
 }

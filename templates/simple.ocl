@@ -1,8 +1,9 @@
-#define VALUE {{ VALUE }}
+#define VALUE1 {{ VALUE1 }}
+#define VALUE2 {{ VALUE2 }}
 
 __kernel void add(__global float* out_buffer,
                   __global float* m1,
                   __global float* m2) {
     size_t id = get_global_id(0);
-    out_buffer[id] = m1[id] + m2[id] + VALUE;
+    out_buffer[id] = m1[id] + m2[id] + VALUE1 - VALUE2;
 }

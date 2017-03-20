@@ -10,9 +10,9 @@ use ocl::{Platform, Context, Device, Queue,
           Program, Kernel, Buffer, SpatialDims};
 
 #[derive(Default, Clone)]
-pub struct ParameterSet {
+pub struct ParameterSet<'a> {
     pub parameters: HashMap<String, Vec<usize>>,
-//    pub constraints: Vec<Box<Fn(Vec<usize>)->bool>>,
+    pub constraints: Vec<&'a Fn(Vec<usize>)->bool>,
 }
 
 #[derive(Default, Clone)]
@@ -64,56 +64,77 @@ impl Tuner {
             let vec = self.rng.gen_iter::<f32>().take(buf.len()).collect::<Vec<f32>>();
             buf.write(&vec).enq().unwrap();
         }
-        // Todo make this a grid
-        let key = "VALUE";
-        for value in params.parameters.get(key).unwrap() {
-            // Generate kernel source
+
+        let keys: Vec<String> = params.parameters.keys().cloned().collect();
+        let n = keys.len();
+        let mut indexes = vec![0; n];
+        loop {
+            // Fill in parameters
             let mut context = tera::Context::new();
-            context.add(key, value);
+            print!("Config: ");
+            for (key, &index) in keys.iter().zip(indexes.iter()) {
+                let v = params.parameters[key][index];
+                print!("{}={}, ", key, v);
+                context.add(key, &v);
+            }
+            // Generate kernel source
             let src = tera::Tera::new(&self.folder).unwrap()
                 .render(&wrapper.src, context).unwrap();
-
-            // Make program
-            let program = Program::builder()
-                .devices(self.device)
-                .src(src)
-                .build(&self.context)
-                .unwrap();
-
-            // Make kernel
-            let mut kernel = Kernel::new(wrapper.name.clone(), &program)
-                .unwrap()
-                .queue(self.queue.clone());
-
-            // Add arguments
-            for &i in &wrapper.scalar_inputs {
-                kernel = kernel.arg_scl(i);
-            }
-            for & ref buffer in &buffers {
-                kernel = kernel.arg_buf(buffer);
-            }
-            // Todo
-            kernel = kernel.gws(buffers[0].len());
-
             // Run the kernel
-            let mut times = Vec::new();
-            for _ in 0..runs {
-                let start = SystemTime::now();
-                kernel.enq().unwrap();
-                times.push(start.elapsed().unwrap());
+            let time = self.run_single_kernel(runs, &src, &buffers, &wrapper);
+            // Print time
+            println!("Time: {}s.{}ns", time.as_secs(), time.subsec_nanos());
+            // Facilitate iteration over all possible combinations
+            let mut last: i32 = indexes.len() as i32 - 1;
+            while last >= 0 && indexes[last as usize] ==
+                params.parameters[&keys[last as usize]].len() - 1 {
+                last -= 1;
             }
-            let average = times.into_iter()
-                .fold(Duration::new(0, 0), |sum, val| sum + val) / runs;
-            // Print first 10 elements of all buffers
-            println!("VALUE: {}, Average time: {}s.{}ns",
-                     value, average.as_secs(), average.subsec_nanos());
-            for & ref buffer in &buffers {
-                let mut vec = vec![0.0f32; buffer.len()];
-                buffer.read(&mut vec).enq().unwrap();
-                println!("{:?}", &vec[0..10]);
+            if last == -1 {
+                break;
+            }
+            indexes[last as usize] += 1;
+            for i in indexes.iter_mut().skip(last as usize + 1) {
+                *i = 0;
             }
         }
+    }
 
+    fn run_single_kernel(&self, runs: u32, src: &str,
+                         buffers: &[Buffer<f32>],
+                         wrapper: &KernelWrapper) -> Duration {
+        // Make program
+        let program = Program::builder()
+            .devices(self.device)
+            .src(src)
+            .build(&self.context)
+            .unwrap();
+
+        // Make kernel
+        let mut kernel = Kernel::new(wrapper.name.clone(), &program)
+            .unwrap().queue(self.queue.clone());
+
+        // Add arguments
+        for &i in &wrapper.scalar_inputs {
+            kernel = kernel.arg_scl(i);
+        }
+        for & ref buffer in buffers {
+            kernel = kernel.arg_buf(buffer);
+        }
+
+        // Todo calculate this better
+        kernel = kernel.gws(buffers[0].len());
+
+        // Run the kernel
+        let mut times = Vec::new();
+        for _ in 0..runs {
+            let start = SystemTime::now();
+            kernel.enq().unwrap();
+            times.push(start.elapsed().unwrap());
+        }
+        let average = times.into_iter()
+            .fold(Duration::new(0, 0), |sum, val| sum + val) / runs;
+        average
     }
 
 }

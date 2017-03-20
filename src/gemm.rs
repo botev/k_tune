@@ -122,7 +122,7 @@ impl GemmBuilder {
         return self
     }
 
-    pub fn build(self) -> Result<ParameterSet, String> {
+    pub fn build(self) -> Result<ParameterSet<'static>, String> {
         for name in vec!["MWG", "NWG", "KWG",
                          "MDIMC", "NDIMC", "MDIMA", "NDIMB",
                          "KWI", "VWM", "VWN",
@@ -132,6 +132,6 @@ impl GemmBuilder {
                 return Err(format!("The GEMM parameter set for '{}' has not been set.", name))
             }
         }
-        Ok(ParameterSet{parameters: self.parameters})
+        Ok(ParameterSet{parameters: self.parameters, constraints: Vec::new()})
     }
 }
