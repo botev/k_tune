@@ -44,17 +44,22 @@ impl SimpleBuilder {
         return self
     }
 
-    pub fn build(self) -> Result<ParameterSet, String> {
-        if self.parameters.get("VALUE1").is_none() {
-            return Err("The Simple parameter set for 'VALUE1' has not been set.".into())
+    pub fn build<'a>(self) -> Result<ParameterSet<'a>, String> {
+        let ordered = vec!["VALUE1", "VALUE2"];
+        for &name in &ordered{
+            if self.parameters.get(name).is_none() {
+                return Err(format!("The Simple parameter set for '{}' has not been set.", name))
+            }
         }
-        if self.parameters.get("VALUE2").is_none() {
-            return Err("The Simple parameter set for 'VALUE2' has not been set.".into())
-        }
-        let mut constraints: Vec<Constraint> = Vec::new();
+        let parameters = ordered.iter().map(move |&x| {
+            let s: String = x.into();
+            let v = self.parameters[&s].clone();
+            (s, v)
+        }).collect();
+        let mut constraints: Vec<Constraint<'static>> = Vec::new();
         fn multiple_of_x(v: &[usize]) -> bool { v[1] % v[0] == 0 };
         constraints.push(Constraint{func: multiple_of_x,
-            args: vec!["VALUE1".into(), "VALUE2".into()]});
-        Ok(ParameterSet{parameters: self.parameters, constraints: constraints})
+            args: vec!["VALUE1", "VALUE2"]});
+        Ok(ParameterSet{parameters: parameters, constraints: constraints})
     }
 }

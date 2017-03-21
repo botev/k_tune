@@ -2,7 +2,7 @@
 use std::collections::HashMap;
 use rand::{thread_rng, Rng};
 use std::time::{Duration, SystemTime};
-use std::ops::*;
+use std::ops::{Index};
 
 use tera;
 
@@ -10,9 +10,31 @@ use ocl::{Platform, Context, Device, Queue,
           Program, Kernel, Buffer, SpatialDims};
 
 #[derive(Clone)]
-pub struct ParameterSet {
-    pub parameters: HashMap<String, Vec<usize>>,
-    pub constraints: Vec<Constraint>,
+pub struct ParameterSet<'a> {
+    pub parameters: Vec<(String, Vec<usize>)>,
+    pub constraints: Vec<Constraint<'a>>,
+}
+
+impl<'a, 'b> Index<&'b str> for ParameterSet<'a> {
+    type Output = Vec<usize>;
+    fn index(&self, index: &'b str) -> &Self::Output {
+        self.get(index).unwrap()
+    }
+}
+
+impl<'a> ParameterSet<'a> {
+    fn get(&self, key: &str) -> Result<&Vec<usize>, String> {
+        for &(ref k, ref v) in &self.parameters {
+            if k == key {
+                return Ok(v)
+            }
+        }
+        Err(format!("Key {} does not exist.", key))
+    }
+
+    fn len(&self) -> usize {
+        self.parameters.len()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -69,25 +91,29 @@ impl Tuner {
             buf.write(&vec).enq().unwrap();
         }
 
-        let keys: Vec<String> = params.parameters.keys().cloned().collect();
-        let n = keys.len();
-        let mut indexes = vec![0; n];
+        let mut indexes = vec![0; params.len()];
+        for &(ref k, _) in &params.parameters {
+            print!("|{:^12}", k);
+        }
+        println!("|{:^17}|", "Time(s.ns)");
+        let l = 13 * params.parameters.len() + 19;
+        println!("{}", (0..l).map(|_| "-").collect::<String>()) ;
         loop {
             // Fill in parameters
             let mut context = tera::Context::new();
-            let config: HashMap<String, usize> = keys
-                .iter().cloned()
+            let config: HashMap<String, usize> = params
+                .parameters.iter()
                 .zip(indexes.iter())
-                .map(|(key, &i)| {
-                    let v = params.parameters[&key][i];
+                .map(|(&(ref key, ref values), &i)| {
+                    let v = values[i];
                     context.add(&key, &v);
-                    print!("{}={}, ", key, v);
-                    (key, v)
+                    print!("|{:>12}", v);
+                    (key.clone(), v)
                 }).collect();
             // Verify constraints
             let mut all_constraints_true = true;
             for constraint in &params.constraints {
-                let args: Vec<_> = constraint.args.iter().map(|x| config[x]).collect();
+                let args: Vec<_> = constraint.args.iter().map(|&x| config[x]).collect();
                 if ! (constraint.func)(&args) {
                     all_constraints_true = false;
                     break;
@@ -99,14 +125,14 @@ impl Tuner {
                 // Run the kernel
                 let time = self.run_single_kernel(runs, &src, &buffers, &wrapper);
                 // Print time
-                println!("Time: {}s.{}ns", time.as_secs(), time.subsec_nanos());
+                println!("|{:>8}.{:<8}|", time.as_secs(), time.subsec_nanos());
             } else {
-                println!("Some constraints are violated for this configuration.")
+                println!("|{:>8}.{:<8}|", "-", "----");
             }
             // Facilitate iteration over all possible combinations
             let mut last: i32 = indexes.len() as i32 - 1;
             while last >= 0 && indexes[last as usize] ==
-                params.parameters[&keys[last as usize]].len() - 1 {
+                params.parameters[last as usize].1.len() - 1 {
                 last -= 1;
             }
             if last == -1 {
@@ -159,12 +185,12 @@ impl Tuner {
 
 type TypeFn = fn(&[usize]) -> bool;
 
-pub struct Constraint {
+pub struct Constraint<'a> {
     pub func: TypeFn,
-    pub args: Vec<String>
+    pub args: Vec<&'a str>
 }
 
-impl Clone for Constraint {
+impl<'a> Clone for Constraint<'a> {
     fn clone(&self) -> Self {
         Constraint {
             func: self.func,

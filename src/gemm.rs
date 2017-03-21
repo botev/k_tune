@@ -132,21 +132,44 @@ impl GemmBuilder {
         return self
     }
 
-    pub fn build(self) -> Result<ParameterSet, String> {
-        for name in vec!["MWG", "NWG", "KWG",
-                         "MDIMC", "NDIMC", "MDIMA", "NDIMB",
-                         "KWI", "VWM", "VWN",
-                         "STRM", "STRN",
-                         "SA", "SB", "PRECISION"] {
+    pub fn build<'a>(self) -> Result<ParameterSet<'a>, String> {
+        let ordered = vec!["MWG", "NWG", "KWG",
+                           "MDIMC", "NDIMC", "MDIMA", "NDIMB",
+                           "KWI", "VWM", "VWN",
+                           "STRM", "STRN",
+                           "SA", "SB", "PRECISION"];
+        for &name in &ordered{
             if self.parameters.get(name).is_none() {
                 return Err(format!("The GEMM parameter set for '{}' has not been set.", name))
             }
         }
-        let mut constraints: Vec<Constraint> = Vec::new();
+        let parameters = ordered.iter().map(move |&x| {
+            let s: String = x.into();
+            let v = self.parameters[&s].clone();
+            (s, v)
+        }).collect();
+        let mut constraints: Vec<Constraint<'static>> = Vec::new();
         fn multiple_of_x(v: &[usize]) -> bool { v[1] % v[0] == 0 }
         fn multiple_of_x_mul_y(v: &[usize]) -> bool { (v[1] * v[2]) % v[0] == 0 }
         fn multiple_of_x_mul_y_div_z(v: &[usize]) -> bool { (v[1] * v[2] / v[3]) % v[0] == 0 }
-        constraints.push(Constraint{func: multiple_of_x, args: vec!["KWG".into(), "KWI".into()]});
-        Ok(ParameterSet{parameters: self.parameters, constraints: constraints})
+
+        // Sets constraints: Requirement for unrolling the KWG loop
+        constraints.push(Constraint{func: multiple_of_x, args: vec!["KWG", "KWI"]});
+
+        // Sets constraints: Required for integer MWI and NWI
+        constraints.push(Constraint{func: multiple_of_x_mul_y, args: vec!["MWG", "MDIMC", "VWM"]});
+        constraints.push(Constraint{func: multiple_of_x_mul_y, args: vec!["NWG", "NDIMC", "VWN"]});
+
+        // Sets constraints: Required for integer MWIA and NWIB
+        constraints.push(Constraint{func: multiple_of_x_mul_y, args: vec!["MWG", "MDIMA", "VWM"]});
+        constraints.push(Constraint{func: multiple_of_x_mul_y, args: vec!["NWG", "NDIMB", "VWN"]});
+
+        // Sets constraints: KWG has to be a multiple of KDIMA = ((MDIMC*NDIMC)/(MDIMA)) and KDIMB = (...)
+        constraints.push(Constraint{func: multiple_of_x_mul_y_div_z,
+            args: vec!["KWG", "MDIMC", "NDIMC", "MDIMA"]});
+        constraints.push(Constraint{func: multiple_of_x_mul_y_div_z,
+            args: vec!["KWG", "MDIMC", "NDIMC", "NDIMB"]});
+
+        Ok(ParameterSet{parameters: parameters, constraints: constraints})
     }
 }
