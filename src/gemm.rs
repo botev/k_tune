@@ -1,13 +1,18 @@
-use core::{KernelWrapper, ParameterSet};
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::prelude::*;
 
-pub fn build_kernel_wrapper(m: usize, n: usize, k: usize) -> KernelWrapper {
+use core::*;
+
+pub fn build_kernel_wrapper(file: &str, m: usize, n: usize, k: usize) -> KernelWrapper {
+    let mut src = String::new();
+    File::open(file).unwrap().read_to_string(&mut src).unwrap();
     KernelWrapper {
         scalar_inputs: vec![m, n, k],
         inputs_dims: vec![(m, k), (k, n), (m, n)],
+        src: src,
         name: "fast_gemm".into(),
-        src: "gemm.ocl".into(),
-        reference_src: None
+        ref_name: None
     }
 }
 
@@ -118,11 +123,16 @@ impl GemmBuilder {
     }
 
     pub fn precision(mut self, values: Vec<usize>) -> Self {
+        for &v in &values {
+            if v != 32 && v != 64 {
+                panic!("Precision can be only 32 or 64.")
+            }
+        }
         self.parameters.insert("PRECISION".into(), values);
         return self
     }
 
-    pub fn build(self) -> Result<ParameterSet<'static>, String> {
+    pub fn build(self) -> Result<ParameterSet, String> {
         for name in vec!["MWG", "NWG", "KWG",
                          "MDIMC", "NDIMC", "MDIMA", "NDIMB",
                          "KWI", "VWM", "VWN",
@@ -132,6 +142,11 @@ impl GemmBuilder {
                 return Err(format!("The GEMM parameter set for '{}' has not been set.", name))
             }
         }
-        Ok(ParameterSet{parameters: self.parameters, constraints: Vec::new()})
+        let mut constraints: Vec<Constraint> = Vec::new();
+        fn multiple_of_x(v: &[usize]) -> bool { v[1] % v[0] == 0 }
+        fn multiple_of_x_mul_y(v: &[usize]) -> bool { (v[1] * v[2]) % v[0] == 0 }
+        fn multiple_of_x_mul_y_div_z(v: &[usize]) -> bool { (v[1] * v[2] / v[3]) % v[0] == 0 }
+        constraints.push(Constraint{func: multiple_of_x, args: vec!["KWG".into(), "KWI".into()]});
+        Ok(ParameterSet{parameters: self.parameters, constraints: constraints})
     }
 }

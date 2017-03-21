@@ -1,13 +1,18 @@
-use core::{KernelWrapper, ParameterSet};
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::prelude::*;
 
-pub fn build_kernel_wrapper(m: usize, n: usize) -> KernelWrapper {
+use core::*;
+
+pub fn build_kernel_wrapper(file: &str, m: usize, n: usize) -> KernelWrapper {
+    let mut src = String::new();
+    File::open(file).unwrap().read_to_string(&mut src).unwrap();
     KernelWrapper {
         scalar_inputs: vec![],
         inputs_dims: vec![(m, n), (m, n), (m, n)],
+        src: src,
         name: "add".into(),
-        src: "simple.ocl".into(),
-        reference_src: None
+        ref_name: None
     }
 }
 
@@ -39,13 +44,17 @@ impl SimpleBuilder {
         return self
     }
 
-    pub fn build(self) -> Result<ParameterSet<'static>, String> {
+    pub fn build(self) -> Result<ParameterSet, String> {
         if self.parameters.get("VALUE1").is_none() {
             return Err("The Simple parameter set for 'VALUE1' has not been set.".into())
         }
         if self.parameters.get("VALUE2").is_none() {
             return Err("The Simple parameter set for 'VALUE2' has not been set.".into())
         }
-        Ok(ParameterSet{parameters: self.parameters, constraints: Vec::new()})
+        let mut constraints: Vec<Constraint> = Vec::new();
+        fn multiple_of_x(v: &[usize]) -> bool { v[1] % v[0] == 0 };
+        constraints.push(Constraint{func: multiple_of_x,
+            args: vec!["VALUE1".into(), "VALUE2".into()]});
+        Ok(ParameterSet{parameters: self.parameters, constraints: constraints})
     }
 }

@@ -1,39 +1,44 @@
 //use std::ops::Fn;
 use std::collections::HashMap;
-use std::boxed::Box;
 use rand::{thread_rng, Rng};
 use std::time::{Duration, SystemTime};
+use std::ops::*;
 
 use tera;
 
 use ocl::{Platform, Context, Device, Queue,
           Program, Kernel, Buffer, SpatialDims};
 
-#[derive(Default, Clone)]
-pub struct ParameterSet<'a> {
+#[derive(Clone)]
+pub struct ParameterSet {
     pub parameters: HashMap<String, Vec<usize>>,
-    pub constraints: Vec<&'a Fn(Vec<usize>)->bool>,
+    pub constraints: Vec<Constraint>,
 }
 
-#[derive(Default, Clone)]
+#[derive(Clone, Debug)]
 pub struct KernelWrapper {
     pub scalar_inputs: Vec<usize>,
     pub inputs_dims: Vec<(usize, usize)>,
-    pub name: String,
     pub src: String,
-    pub reference_src: Option<String>
+    pub name: String,
+    pub ref_name: Option<String>
 }
 
+#[derive(Clone, Debug)]
 pub struct Tuner {
     device: Device,
     context: Context,
     queue: Queue,
-    rng: Box<Rng>,
-    folder: String
+}
+
+impl Default for Tuner{
+    fn default() -> Self {
+        Tuner::new(0, 0)
+    }
 }
 
 impl Tuner {
-    pub fn new(folder: &str, platform_id: usize, device_id: usize) -> Self {
+    pub fn new(platform_id: usize, device_id: usize) -> Self {
         let platform = Platform::list()[platform_id];
         let device = Device::list_all(&platform).unwrap()[device_id];
         let context = Context::builder()
@@ -46,12 +51,10 @@ impl Tuner {
             device: device,
             context: context,
             queue: queue,
-            rng: Box::new(thread_rng()),
-            folder: String::new() + folder
         }
     }
 
-    pub fn tune(&mut self, wrapper: KernelWrapper, params: ParameterSet, runs: u32) {
+    pub fn tune(&self, wrapper: KernelWrapper, params: ParameterSet, runs: u32) {
         // Generate buffers
         let buffers: Vec<Buffer<f32>> = wrapper.inputs_dims.iter().map(|&(ref r, ref c)|
             Buffer::<f32>::builder()
@@ -60,8 +63,9 @@ impl Tuner {
                 .build().unwrap()
         ).collect();
         // Populate buffers
+        let mut rng = thread_rng();
         for buf in &buffers {
-            let vec = self.rng.gen_iter::<f32>().take(buf.len()).collect::<Vec<f32>>();
+            let vec = rng.gen_iter::<f32>().take(buf.len()).collect::<Vec<f32>>();
             buf.write(&vec).enq().unwrap();
         }
 
@@ -71,19 +75,34 @@ impl Tuner {
         loop {
             // Fill in parameters
             let mut context = tera::Context::new();
-            print!("Config: ");
-            for (key, &index) in keys.iter().zip(indexes.iter()) {
-                let v = params.parameters[key][index];
-                print!("{}={}, ", key, v);
-                context.add(key, &v);
+            let config: HashMap<String, usize> = keys
+                .iter().cloned()
+                .zip(indexes.iter())
+                .map(|(key, &i)| {
+                    let v = params.parameters[&key][i];
+                    context.add(&key, &v);
+                    print!("{}={}, ", key, v);
+                    (key, v)
+                }).collect();
+            // Verify constraints
+            let mut all_constraints_true = true;
+            for constraint in &params.constraints {
+                let args: Vec<_> = constraint.args.iter().map(|x| config[x]).collect();
+                if ! (constraint.func)(&args) {
+                    all_constraints_true = false;
+                    break;
+                }
             }
-            // Generate kernel source
-            let src = tera::Tera::new(&self.folder).unwrap()
-                .render(&wrapper.src, context).unwrap();
-            // Run the kernel
-            let time = self.run_single_kernel(runs, &src, &buffers, &wrapper);
-            // Print time
-            println!("Time: {}s.{}ns", time.as_secs(), time.subsec_nanos());
+            if all_constraints_true {
+                // Generate kernel source
+                let src = tera::Tera::one_off(&wrapper.src, context, true).unwrap();
+                // Run the kernel
+                let time = self.run_single_kernel(runs, &src, &buffers, &wrapper);
+                // Print time
+                println!("Time: {}s.{}ns", time.as_secs(), time.subsec_nanos());
+            } else {
+                println!("Some constraints are violated for this configuration.")
+            }
             // Facilitate iteration over all possible combinations
             let mut last: i32 = indexes.len() as i32 - 1;
             while last >= 0 && indexes[last as usize] ==
@@ -134,7 +153,26 @@ impl Tuner {
         }
         let average = times.into_iter()
             .fold(Duration::new(0, 0), |sum, val| sum + val) / runs;
-        average
+            average
     }
+}
 
+type TypeFn = fn(&[usize]) -> bool;
+
+pub struct Constraint {
+    pub func: TypeFn,
+    pub args: Vec<String>
+}
+
+impl Clone for Constraint {
+    fn clone(&self) -> Self {
+        Constraint {
+            func: self.func,
+            args: self.args.clone()
+        }
+    }
+}
+
+pub fn is_power_of_two(value: &usize) -> bool {
+    value & (value - 1) == 0
 }
