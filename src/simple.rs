@@ -3,6 +3,7 @@ use std::fs::File;
 use std::io::prelude::*;
 
 use core::*;
+use ocl::SpatialDims;
 
 pub fn build_kernel_wrapper(file: &str, m: usize, n: usize) -> KernelWrapper {
     let mut src = String::new();
@@ -12,13 +13,15 @@ pub fn build_kernel_wrapper(file: &str, m: usize, n: usize) -> KernelWrapper {
         inputs_dims: vec![(m, n), (m, n), (m, n)],
         src: src,
         name: "add".into(),
-        ref_name: None
+        ref_name: None,
+        global_base: SpatialDims::Two(m, n),
+        local_base: SpatialDims::Two(1, 1)
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct SimpleBuilder {
-    parameters: HashMap<String, Vec<usize>>,
+    parameters: HashMap<String, Vec<i32>>,
 }
 
 impl Default for SimpleBuilder {
@@ -34,12 +37,12 @@ impl SimpleBuilder {
         SimpleBuilder{parameters: HashMap::new()}
     }
 
-    pub fn value1(mut self, values: Vec<usize>) -> Self {
+    pub fn value1(mut self, values: Vec<i32>) -> Self {
         self.parameters.insert("VALUE1".into(), values);
         return self
     }
 
-    pub fn value2(mut self, values: Vec<usize>) -> Self {
+    pub fn value2(mut self, values: Vec<i32>) -> Self {
         self.parameters.insert("VALUE2".into(), values);
         return self
     }
@@ -57,9 +60,14 @@ impl SimpleBuilder {
             (s, v)
         }).collect();
         let mut constraints: Vec<Constraint<'static>> = Vec::new();
-        fn multiple_of_x(v: &[usize]) -> bool { v[1] % v[0] == 0 };
+        fn multiple_of_x(v: &[i32]) -> bool { v[1] % v[0] == 0 };
         constraints.push(Constraint{func: multiple_of_x,
             args: vec!["VALUE1", "VALUE2"]});
-        Ok(ParameterSet{parameters: parameters, constraints: constraints})
+        Ok(ParameterSet{
+            parameters: parameters,
+            constraints: constraints,
+            mul_global_size: None,
+            mul_local_size: None,
+            div_global_size: None})
     }
 }

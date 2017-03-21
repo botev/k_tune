@@ -4,26 +4,29 @@ use rand::{thread_rng, Rng};
 use std::time::{Duration, SystemTime};
 use std::ops::{Index};
 
-use tera;
+//use tera;
 
 use ocl::{Platform, Context, Device, Queue,
           Program, Kernel, Buffer, SpatialDims};
 
 #[derive(Clone)]
 pub struct ParameterSet<'a> {
-    pub parameters: Vec<(String, Vec<usize>)>,
+    pub parameters: Vec<(String, Vec<i32>)>,
     pub constraints: Vec<Constraint<'a>>,
+    pub mul_local_size: Option<Vec<Option<String>>>,
+    pub mul_global_size: Option<Vec<Option<String>>>,
+    pub div_global_size: Option<Vec<Option<String>>>,
 }
 
 impl<'a, 'b> Index<&'b str> for ParameterSet<'a> {
-    type Output = Vec<usize>;
+    type Output = Vec<i32>;
     fn index(&self, index: &'b str) -> &Self::Output {
         self.get(index).unwrap()
     }
 }
 
 impl<'a> ParameterSet<'a> {
-    fn get(&self, key: &str) -> Result<&Vec<usize>, String> {
+    fn get(&self, key: &str) -> Result<&Vec<i32>, String> {
         for &(ref k, ref v) in &self.parameters {
             if k == key {
                 return Ok(v)
@@ -43,7 +46,9 @@ pub struct KernelWrapper {
     pub inputs_dims: Vec<(usize, usize)>,
     pub src: String,
     pub name: String,
-    pub ref_name: Option<String>
+    pub ref_name: Option<String>,
+    pub global_base: SpatialDims,
+    pub local_base: SpatialDims
 }
 
 #[derive(Clone, Debug)]
@@ -100,16 +105,17 @@ impl Tuner {
         println!("{}", (0..l).map(|_| "-").collect::<String>()) ;
         loop {
             // Fill in parameters
-            let mut context = tera::Context::new();
-            let config: HashMap<String, usize> = params
+            //            let mut context = tera::Context::new();
+            let config: HashMap<String, i32> = params
                 .parameters.iter()
                 .zip(indexes.iter())
                 .map(|(&(ref key, ref values), &i)| {
                     let v = values[i];
-                    context.add(&key, &v);
+                    //                    context.add(&key, &v);
                     print!("|{:>12}", v);
                     (key.clone(), v)
                 }).collect();
+
             // Verify constraints
             let mut all_constraints_true = true;
             for constraint in &params.constraints {
@@ -120,10 +126,10 @@ impl Tuner {
                 }
             }
             if all_constraints_true {
-                // Generate kernel source
-                let src = tera::Tera::one_off(&wrapper.src, context, true).unwrap();
+                //                // Generate kernel source
+                //                let src = tera::Tera::one_off(&wrapper.src, context, true).unwrap();
                 // Run the kernel
-                let time = self.run_single_kernel(runs, &src, &buffers, &wrapper);
+                let time = self.run_single_kernel(runs, &wrapper, config, &buffers);
                 // Print time
                 println!("|{:>8}.{:<8}|", time.as_secs(), time.subsec_nanos());
             } else {
@@ -145,15 +151,24 @@ impl Tuner {
         }
     }
 
-    fn run_single_kernel(&self, runs: u32, src: &str,
-                         buffers: &[Buffer<f32>],
-                         wrapper: &KernelWrapper) -> Duration {
-        // Make program
-        let program = Program::builder()
+    fn run_single_kernel(&self, runs: u32,  wrapper: &KernelWrapper,
+                         config: HashMap<String, i32>,
+                         buffers: &[Buffer<f32>]) -> Duration {
+        // Calculate global and local size
+        let mut global_size = wrapper.global_base;
+        let mut local_size = wrapper.local_base;
+
+        // Build the program with all defines
+        let mut program = Program::builder();
+        println!("****");
+        for (k, v) in config.into_iter() {
+            println!("#define {} {}", k, v);
+            program = program.cmplr_def(k, v);
+        }
+        let program = program
             .devices(self.device)
-            .src(src)
-            .build(&self.context)
-            .unwrap();
+            .src_file(wrapper.src.clone())
+            .build(&self.context).unwrap();
 
         // Make kernel
         let mut kernel = Kernel::new(wrapper.name.clone(), &program)
@@ -168,7 +183,7 @@ impl Tuner {
         }
 
         // Todo calculate this better
-        kernel = kernel.gws(buffers[0].len());
+        kernel = kernel.gws(global_size).lws(local_size);
 
         // Run the kernel
         let mut times = Vec::new();
@@ -179,11 +194,11 @@ impl Tuner {
         }
         let average = times.into_iter()
             .fold(Duration::new(0, 0), |sum, val| sum + val) / runs;
-            average
+        average
     }
 }
 
-type TypeFn = fn(&[usize]) -> bool;
+type TypeFn = fn(&[i32]) -> bool;
 
 pub struct Constraint<'a> {
     pub func: TypeFn,

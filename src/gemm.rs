@@ -3,6 +3,7 @@ use std::fs::File;
 use std::io::prelude::*;
 
 use core::*;
+use ocl::SpatialDims;
 
 pub fn build_kernel_wrapper(file: &str, m: usize, n: usize, k: usize) -> KernelWrapper {
     let mut src = String::new();
@@ -12,13 +13,15 @@ pub fn build_kernel_wrapper(file: &str, m: usize, n: usize, k: usize) -> KernelW
         inputs_dims: vec![(m, k), (k, n), (m, n)],
         src: src,
         name: "fast_gemm".into(),
-        ref_name: None
+        ref_name: None,
+        global_base: SpatialDims::Two(m, n),
+        local_base: SpatialDims::Two(1, 1)
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct GemmBuilder {
-    parameters: HashMap<String, Vec<usize>>,
+    parameters: HashMap<String, Vec<i32>>,
 }
 
 impl Default for GemmBuilder {
@@ -48,81 +51,81 @@ impl GemmBuilder {
         GemmBuilder{parameters: HashMap::new()}
     }
 
-    pub fn mwg(mut self, values: Vec<usize>) -> Self {
+    pub fn mwg(mut self, values: Vec<i32>) -> Self {
         self.parameters.insert("MWG".into(), values);
         return self
     }
 
-    pub fn nwg(mut self, values: Vec<usize>) -> Self {
+    pub fn nwg(mut self, values: Vec<i32>) -> Self {
         self.parameters.insert("NWG".into(), values);
         return self
     }
 
-    pub fn kwg(mut self, values: Vec<usize>) -> Self {
+    pub fn kwg(mut self, values: Vec<i32>) -> Self {
         self.parameters.insert("KWG".into(), values);
         return self
     }
 
-    pub fn mdimc(mut self, values: Vec<usize>) -> Self {
+    pub fn mdimc(mut self, values: Vec<i32>) -> Self {
         self.parameters.insert("MDIMC".into(), values);
         return self
     }
 
-    pub fn ndimc(mut self, values: Vec<usize>) -> Self {
+    pub fn ndimc(mut self, values: Vec<i32>) -> Self {
         self.parameters.insert("NDIMC".into(), values);
         return self
     }
 
-    pub fn mdima(mut self, values: Vec<usize>) -> Self {
+    pub fn mdima(mut self, values: Vec<i32>) -> Self {
         self.parameters.insert("MDIMA".into(), values);
         return self
     }
 
-    pub fn ndimb(mut self, values: Vec<usize>) -> Self {
+    pub fn ndimb(mut self, values: Vec<i32>) -> Self {
         self.parameters.insert("NDIMB".into(), values);
         return self
     }
 
-    pub fn kwi(mut self, values: Vec<usize>) -> Self {
+    pub fn kwi(mut self, values: Vec<i32>) -> Self {
         self.parameters.insert("KWI".into(), values);
         return self
     }
 
-    pub fn vwm(mut self, values: Vec<usize>) -> Self {
+    pub fn vwm(mut self, values: Vec<i32>) -> Self {
         self.parameters.insert("VWM".into(), values);
         return self
     }
 
-    pub fn vwn(mut self, values: Vec<usize>) -> Self {
+    pub fn vwn(mut self, values: Vec<i32>) -> Self {
         self.parameters.insert("VWN".into(), values);
         return self
     }
 
     pub fn strm(mut self, values: Vec<bool>) -> Self {
-        let values = values.into_iter().map(|x| x as usize).collect();
+        let values = values.into_iter().map(|x| x as i32).collect();
         self.parameters.insert("STRM".into(), values);
         return self
     }
 
     pub fn strn(mut self, values: Vec<bool>) -> Self {
-        let values = values.into_iter().map(|x| x as usize).collect();
+        let values = values.into_iter().map(|x| x as i32).collect();
         self.parameters.insert("STRN".into(), values);
         return self
     }
 
     pub fn sa(mut self, values: Vec<bool>) -> Self {
-        let values = values.into_iter().map(|x| x as usize).collect();
+        let values = values.into_iter().map(|x| x as i32).collect();
         self.parameters.insert("SA".into(), values);
         return self
     }
 
     pub fn sb(mut self, values: Vec<bool>) -> Self {
-        let values = values.into_iter().map(|x| x as usize).collect();
+        let values = values.into_iter().map(|x| x as i32).collect();
         self.parameters.insert("SB".into(), values);
         return self
     }
 
-    pub fn precision(mut self, values: Vec<usize>) -> Self {
+    pub fn precision(mut self, values: Vec<i32>) -> Self {
         for &v in &values {
             if v != 32 && v != 64 {
                 panic!("Precision can be only 32 or 64.")
@@ -149,9 +152,9 @@ impl GemmBuilder {
             (s, v)
         }).collect();
         let mut constraints: Vec<Constraint<'static>> = Vec::new();
-        fn multiple_of_x(v: &[usize]) -> bool { v[1] % v[0] == 0 }
-        fn multiple_of_x_mul_y(v: &[usize]) -> bool { (v[1] * v[2]) % v[0] == 0 }
-        fn multiple_of_x_mul_y_div_z(v: &[usize]) -> bool { (v[1] * v[2] / v[3]) % v[0] == 0 }
+        fn multiple_of_x(v: &[i32]) -> bool { v[1] % v[0] == 0 }
+        fn multiple_of_x_mul_y(v: &[i32]) -> bool { (v[1] * v[2]) % v[0] == 0 }
+        fn multiple_of_x_mul_y_div_z(v: &[i32]) -> bool { (v[1] * v[2] / v[3]) % v[0] == 0 }
 
         // Sets constraints: Requirement for unrolling the KWG loop
         constraints.push(Constraint{func: multiple_of_x, args: vec!["KWG", "KWI"]});
@@ -170,6 +173,11 @@ impl GemmBuilder {
         constraints.push(Constraint{func: multiple_of_x_mul_y_div_z,
             args: vec!["KWG", "MDIMC", "NDIMC", "NDIMB"]});
 
-        Ok(ParameterSet{parameters: parameters, constraints: constraints})
+        Ok(ParameterSet{
+            parameters: parameters,
+            constraints: constraints,
+            mul_global_size: None,
+            mul_local_size: None,
+            div_global_size: None})
     }
 }
