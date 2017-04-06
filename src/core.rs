@@ -1,13 +1,15 @@
-//use std::ops::Fn;
 use std::collections::HashMap;
 use rand::{thread_rng, Rng};
-use std::time::{Duration, SystemTime};
-use std::ops::{Index};
+use std::time::Duration;
+use std::ops::Index;
+use std::path::PathBuf;
 
-//use tera;
-
-use ocl::{Platform, Context, Device, Queue,
+use ocl::{Platform, Context, Device, Queue, Event,
           Program, Kernel, Buffer, SpatialDims};
+use ocl::flags::CommandQueueProperties;
+use ocl::enums::ProfilingInfo;
+use futures::future::Future;
+
 
 #[derive(Clone)]
 pub struct ParameterSet<'a> {
@@ -42,7 +44,7 @@ impl<'a> ParameterSet<'a> {
 
 #[derive(Clone, Debug)]
 pub struct KernelWrapper {
-    pub scalar_inputs: Vec<usize>,
+    pub scalar_inputs: Vec<i32>,
     pub inputs_dims: Vec<(usize, usize)>,
     pub src: String,
     pub name: String,
@@ -56,16 +58,19 @@ pub struct Tuner {
     device: Device,
     context: Context,
     queue: Queue,
+    log_file: Option<PathBuf>
 }
 
 impl Default for Tuner{
     fn default() -> Self {
-        Tuner::new(0, 0)
+        Tuner::new::<PathBuf>(0, 0, None)
     }
 }
 
 impl Tuner {
-    pub fn new(platform_id: usize, device_id: usize) -> Self {
+    pub fn new<T: Into<PathBuf>>(platform_id: usize,
+                                 device_id: usize,
+                                 log_file: Option<T>) -> Self {
         let platform = Platform::list()[platform_id];
         let device = Device::list_all(&platform).unwrap()[device_id];
         let context = Context::builder()
@@ -73,11 +78,13 @@ impl Tuner {
             .devices(device)
             .build()
             .unwrap();
-        let queue = Queue::new(&context, device, None).unwrap();
+        let queue_flags = Some(CommandQueueProperties::new().profiling());
+        let queue = Queue::new(&context, device, queue_flags).unwrap();
         Tuner {
             device: device,
             context: context,
             queue: queue,
+            log_file: log_file.map(|x| x.into())
         }
     }
 
@@ -98,10 +105,14 @@ impl Tuner {
 
         let mut indexes = vec![0; params.len()];
         for &(ref k, _) in &params.parameters {
-            print!("|{:^12}", k);
+            if k.len() > 8 {
+                print!("|{:^8}", &k[0..8]);
+            } else {
+                print!("|{:^8}", k);
+            }
         }
-        println!("|{:^17}|", "Time(s.ns)");
-        let l = 13 * params.parameters.len() + 19;
+        println!("|{:^13}|", "Time(s.ns)");
+        let l = 9 * params.parameters.len() + 15;
         println!("{}", (0..l).map(|_| "-").collect::<String>()) ;
         loop {
             // Fill in parameters
@@ -112,28 +123,27 @@ impl Tuner {
                 .map(|(&(ref key, ref values), &i)| {
                     let v = values[i];
                     //                    context.add(&key, &v);
-                    print!("|{:>12}", v);
+//                    print!("|{:>10}", v);
                     (key.clone(), v)
                 }).collect();
 
             // Verify constraints
-            let mut all_constraints_true = true;
-            for constraint in &params.constraints {
+            let mut failed = None;
+            for (i, constraint) in params.constraints.iter().enumerate() {
                 let args: Vec<_> = constraint.args.iter().map(|&x| config[x]).collect();
                 if ! (constraint.func)(&args) {
-                    all_constraints_true = false;
+                    failed = Some(i);
                     break;
                 }
             }
-            if all_constraints_true {
-                //                // Generate kernel source
-                //                let src = tera::Tera::one_off(&wrapper.src, context, true).unwrap();
+            if failed.is_none() {
                 // Run the kernel
-                let time = self.run_single_kernel(runs, &wrapper, config, &buffers);
+                let time = self.run_single_kernel(runs, &wrapper, &params, &config, &buffers);
                 // Print time
-                println!("|{:>8}.{:<8}|", time.as_secs(), time.subsec_nanos());
-            } else {
-                println!("|{:>8}.{:<8}|", "-", "----");
+                for k in params.parameters.iter().map(|&(ref k, _)| k) {
+                    print!("|{:>8}", config[k]);
+                }
+                println!("|{:>3}.{:<09}|", time.as_secs(), time.subsec_nanos());
             }
             // Facilitate iteration over all possible combinations
             let mut last: i32 = indexes.len() as i32 - 1;
@@ -152,27 +162,27 @@ impl Tuner {
     }
 
     fn run_single_kernel(&self, runs: u32,  wrapper: &KernelWrapper,
-                         config: HashMap<String, i32>,
+                         params: &ParameterSet,
+                         config: &HashMap<String, i32>,
                          buffers: &[Buffer<f32>]) -> Duration {
-        // Calculate global and local size
-        let mut global_size = wrapper.global_base;
-        let mut local_size = wrapper.local_base;
+        let (gws, lws) = Tuner::calculate_work_sizes(&wrapper, &params, &config);
 
         // Build the program with all defines
         let mut program = Program::builder();
-        println!("****");
-        for (k, v) in config.into_iter() {
-            println!("#define {} {}", k, v);
-            program = program.cmplr_def(k, v);
+        for (& ref k, & ref v) in config.iter() {
+            program = program.cmplr_def(k.clone(), *v);
         }
         let program = program
             .devices(self.device)
-            .src_file(wrapper.src.clone())
+            .src(wrapper.src.clone())
             .build(&self.context).unwrap();
 
         // Make kernel
         let mut kernel = Kernel::new(wrapper.name.clone(), &program)
-            .unwrap().queue(self.queue.clone());
+            .unwrap()
+            .queue(self.queue.clone())
+            .gws(gws)
+            .lws(lws);
 
         // Add arguments
         for &i in &wrapper.scalar_inputs {
@@ -182,19 +192,97 @@ impl Tuner {
             kernel = kernel.arg_buf(buffer);
         }
 
-        // Todo calculate this better
-        kernel = kernel.gws(global_size).lws(local_size);
-
         // Run the kernel
         let mut times = Vec::new();
         for _ in 0..runs {
-            let start = SystemTime::now();
-            kernel.enq().unwrap();
-            times.push(start.elapsed().unwrap());
+            // Event for timing
+            let mut kernel_event = Event::empty();
+            kernel.cmd()
+                .enew(&mut kernel_event)
+                .enq().unwrap();
+            kernel_event.clone().wait().unwrap();
+            let command_start: u64 = kernel_event.profiling_info(ProfilingInfo::Start)
+                .time().unwrap();
+            let command_end: u64 = kernel_event.profiling_info(ProfilingInfo::End)
+                .time().unwrap();
+            let time = command_end - command_start;
+            times.push(Duration::new(time / 1000000000, (time % 1000000000) as u32));
         }
-        let average = times.into_iter()
-            .fold(Duration::new(0, 0), |sum, val| sum + val) / runs;
-        average
+        times.iter().sum::<Duration>() / runs
+    }
+
+    fn calculate_work_sizes(wrapper: &KernelWrapper,
+                            params: &ParameterSet,
+                            config: &HashMap<String, i32>) -> (SpatialDims, SpatialDims) {
+        let mut global_size = wrapper.global_base;
+        let mut local_size = wrapper.local_base;
+        if global_size.dim_count() != local_size.dim_count() {
+            panic!("Different number of dimensions of global_size and local_size.")
+        }
+        if let Some(ref mul) = params.mul_global_size {
+            if mul.len() != global_size.dim_count() as usize {
+                panic!("Different number of multipliers for global_size")
+            }
+            let mul: Vec<i32> = mul.iter().map(|x| {
+                match *x {
+                    Some(ref key) => config[key],
+                    None => 1
+                }
+            }).collect();
+            global_size = match global_size {
+                SpatialDims::Unspecified => panic!("Unspecified spatial dims"),
+                SpatialDims::One(x) => SpatialDims::One(x * mul[0] as usize),
+                SpatialDims::Two(x, y) => SpatialDims::Two(x * mul[0] as usize,
+                                                           y * mul[1] as usize),
+                SpatialDims::Three(x, y, z) =>
+                    SpatialDims::Three(x * mul[0] as usize,
+                                       y * mul[1] as usize,
+                                       z * mul[2] as usize)
+            }
+        }
+        if let Some(ref mul) = params.mul_local_size {
+            if mul.len() != local_size.dim_count() as usize {
+                panic!("Different number of multipliers for local_size")
+            }
+            let mul: Vec<i32> = mul.iter().map(|x| {
+                match *x {
+                    Some(ref key) => config[key],
+                    None => 1
+                }
+            }).collect();
+            local_size = match local_size {
+                SpatialDims::Unspecified => panic!("Unspecified spatial dims"),
+                SpatialDims::One(x) => SpatialDims::One(x * mul[0] as usize),
+                SpatialDims::Two(x, y) => SpatialDims::Two(x * mul[0] as usize,
+                                                           y * mul[1] as usize),
+                SpatialDims::Three(x, y, z) =>
+                    SpatialDims::Three(x * mul[0] as usize,
+                                       y * mul[1] as usize,
+                                       z * mul[2] as usize)
+            }
+        }
+        if let Some(ref div) = params.div_global_size {
+            if div.len() != global_size.dim_count() as usize {
+                panic!("Different number of multipliers for local_size")
+            }
+            let div: Vec<i32> = div.iter().map(|x| {
+                match *x {
+                    Some(ref key) => config[key],
+                    None => 1
+                }
+            }).collect();
+            global_size = match global_size {
+                SpatialDims::Unspecified => panic!("Unspecified spatial dims"),
+                SpatialDims::One(x) => SpatialDims::One(x / div[0] as usize),
+                SpatialDims::Two(x, y) => SpatialDims::Two(x / div[0] as usize,
+                                                           y / div[1] as usize),
+                SpatialDims::Three(x, y, z) =>
+                    SpatialDims::Three(x / div[0] as usize,
+                                       y / div[1] as usize,
+                                       z / div[2] as usize)
+            }
+        }
+        (global_size, local_size)
     }
 }
 

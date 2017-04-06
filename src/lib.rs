@@ -1,6 +1,6 @@
-extern crate tera;
 extern crate rand;
 extern crate ocl;
+extern crate futures;
 
 
 pub mod core;

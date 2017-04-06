@@ -1,8 +1,6 @@
 extern crate ocl;
-extern crate rand;
-extern crate k_tune;
 
-use k_tune::gemm;
+extern crate k_tune;
 use k_tune::simple;
 
 pub fn simple() -> ::ocl::Result<()> {
@@ -16,14 +14,7 @@ pub fn simple() -> ::ocl::Result<()> {
     Ok(())
 }
 
-pub fn gemm() -> ::ocl::Result<()> {
-    let params = gemm::GemmBuilder::default().build().unwrap();
-    let wrapper = gemm::build_kernel_wrapper("templates/gemm.ocl", 1024, 1024, 1024);
-    let tuner = k_tune::Tuner::default();
-    tuner.tune(wrapper, params, 10);
-    Ok(())
-}
-
 fn main() {
     simple().unwrap();
 }
+

@@ -9,10 +9,10 @@ pub fn build_kernel_wrapper(file: &str, m: usize, n: usize, k: usize) -> KernelW
     let mut src = String::new();
     File::open(file).unwrap().read_to_string(&mut src).unwrap();
     KernelWrapper {
-        scalar_inputs: vec![m, n, k],
+        scalar_inputs: vec![m as i32, n as i32, k as i32],
         inputs_dims: vec![(m, k), (k, n), (m, n)],
         src: src,
-        name: "fast_gemm".into(),
+        name: "gemm_fast".into(),
         ref_name: None,
         global_base: SpatialDims::Two(m, n),
         local_base: SpatialDims::Two(1, 1)
@@ -152,9 +152,9 @@ impl GemmBuilder {
             (s, v)
         }).collect();
         let mut constraints: Vec<Constraint<'static>> = Vec::new();
-        fn multiple_of_x(v: &[i32]) -> bool { v[1] % v[0] == 0 }
-        fn multiple_of_x_mul_y(v: &[i32]) -> bool { (v[1] * v[2]) % v[0] == 0 }
-        fn multiple_of_x_mul_y_div_z(v: &[i32]) -> bool { (v[1] * v[2] / v[3]) % v[0] == 0 }
+        fn multiple_of_x(v: &[i32]) -> bool { v[0] % v[1] == 0 }
+        fn multiple_of_x_mul_y(v: &[i32]) -> bool { v[0] % (v[1] * v[2]) == 0 }
+        fn multiple_of_x_mul_y_div_z(v: &[i32]) -> bool { v[0] % ((v[1] * v[2]) / v[3]) == 0 }
 
         // Sets constraints: Requirement for unrolling the KWG loop
         constraints.push(Constraint{func: multiple_of_x, args: vec!["KWG", "KWI"]});
@@ -176,8 +176,9 @@ impl GemmBuilder {
         Ok(ParameterSet{
             parameters: parameters,
             constraints: constraints,
-            mul_global_size: None,
-            mul_local_size: None,
-            div_global_size: None})
+            mul_global_size: Some(vec![Some("MDIMC".into()), Some("NDIMC".into())]),
+            mul_local_size: Some(vec![Some("MDIMC".into()), Some("NDIMC".into())]),
+            div_global_size: Some(vec![Some("MWG".into()), Some("NWG".into())])
+        })
     }
 }
