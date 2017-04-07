@@ -7,7 +7,8 @@ extern crate k_tune;
 use k_tune::gemm;
 
 pub fn gemm(platform_id: usize, device_id: usize,
-            m: usize, n: usize, k: usize) -> ::ocl::Result<()> {
+            m: usize, n: usize, k: usize,
+            file: Option<&str>) -> ::ocl::Result<()> {
     println!("Platform: {}\nDevice: {}\nM: {}\nN: {}\nK: {}\n",
              platform_id,
              device_id,
@@ -23,8 +24,8 @@ pub fn gemm(platform_id: usize, device_id: usize,
         .kwi(vec![2, 4, 8])
         .precision(vec![32]).build().unwrap();
     let wrapper = gemm::build_kernel_wrapper("templates/gemm.ocl", m ,n, k);
-    let tuner = k_tune::Tuner::new::<&str>(platform_id, device_id, None);
-    tuner.tune(wrapper, params, 10);
+    let tuner = k_tune::Tuner::new(platform_id, device_id);
+    tuner.tune(wrapper, params, 10, file);
     Ok(())
 }
 
@@ -33,23 +34,30 @@ fn main() {
         .version("0.1")
         .author("Aleksandar Botev")
         .about("Based on CLTune")
+        .arg(Arg::with_name("file")
+            .short("f").long("file")
+            .takes_value(true)
+            .help("The log file to which to write results."))
         .arg(Arg::with_name("platform")
-            .short("pl")
-            .help("Sets the OpenCL platform to use.")
-            .default_value("0"))
+            .short("p").long("platform")
+            .takes_value(true)
+            .help("Sets the OpenCL platform to use."))
         .arg(Arg::with_name("device")
-            .short("d")
-            .help("Sets the OpenCL device to use.")
-            .default_value("0"))
+            .short("d").long("device")
+            .takes_value(true)
+            .help("Sets the OpenCL device to use."))
         .arg(Arg::with_name("m")
-            .help("The first dimension of the matrix A.")
-            .default_value("2048"))
+            .short("m").long("m")
+            .takes_value(true)
+            .help("The first dimension of the matrix A."))
         .arg(Arg::with_name("n")
-            .help("The second dimension of the matrix B.")
-            .default_value("2048"))
+            .short("n").long("n")
+            .takes_value(true)
+            .help("The second dimension of the matrix B."))
         .arg(Arg::with_name("k")
-            .help("The second dimension of the matrix A and first dimension of B.")
-            .default_value("2048"))
+            .short("k").long("k")
+            .takes_value(true)
+            .help("The second dimension of the matrix A and first dimension of B."))
         .get_matches();
     let pid = usize::from_str(matches
         .value_of("platform").unwrap_or("0"))
@@ -66,5 +74,6 @@ fn main() {
     let k = usize::from_str(matches
         .value_of("k").unwrap_or("2048"))
         .expect("k must be a valid integer.");
-    gemm(pid, did, m, n, k).unwrap();
+    let file = matches.value_of("file");
+    gemm(pid, did, m, n, k, file).unwrap();
 }

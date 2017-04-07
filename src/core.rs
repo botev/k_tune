@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use rand::{thread_rng, Rng};
 use std::time::Duration;
 use std::ops::Index;
-use std::path::PathBuf;
+use std::io::Write;
 
 use ocl::{Platform, Context, Device, Queue, Event,
           Program, Kernel, Buffer, SpatialDims};
@@ -57,22 +57,21 @@ pub struct KernelWrapper {
 pub struct Tuner {
     device: Device,
     context: Context,
-    queue: Queue,
-    log_file: Option<PathBuf>
+    queue: Queue
 }
 
 impl Default for Tuner{
     fn default() -> Self {
-        Tuner::new::<PathBuf>(0, 0, None)
+        Tuner::new(0, 0)
     }
 }
 
 impl Tuner {
-    pub fn new<T: Into<PathBuf>>(platform_id: usize,
-                                 device_id: usize,
-                                 log_file: Option<T>) -> Self {
+    pub fn new(platform_id: usize, device_id: usize) -> Self {
         let platform = Platform::list()[platform_id];
         let device = Device::list_all(&platform).unwrap()[device_id];
+        println!("Platform: {} - {}", platform.name(), platform.version());
+        println!("Device: {} by {}", device.name(), device.vendor());
         let context = Context::builder()
             .platform(platform)
             .devices(device)
@@ -84,11 +83,13 @@ impl Tuner {
             device: device,
             context: context,
             queue: queue,
-            log_file: log_file.map(|x| x.into())
         }
     }
 
-    pub fn tune(&self, wrapper: KernelWrapper, params: ParameterSet, runs: u32) {
+    pub fn tune(&self, wrapper: KernelWrapper,
+                params: ParameterSet,
+                runs: u32, log_file: Option<&str>) {
+        let mut log_file = log_file.map(|x| ::std::fs::File::create(x).unwrap());
         // Generate buffers
         let buffers: Vec<Buffer<f32>> = wrapper.inputs_dims.iter().map(|&(ref r, ref c)|
             Buffer::<f32>::builder()
@@ -103,17 +104,13 @@ impl Tuner {
             buf.write(&vec).enq().unwrap();
         }
 
-        let mut indexes = vec![0; params.len()];
-        for &(ref k, _) in &params.parameters {
-            if k.len() > 8 {
-                print!("|{:^8}", &k[0..8]);
-            } else {
-                print!("|{:^8}", k);
-            }
+        if let Some(f) = log_file.as_mut() {
+            Tuner::write_header(&params.parameters, f).expect("Writing header failed.");
+        } else {
+            Tuner::print_header(&params.parameters);
         }
-        println!("|{:^13}|", "Time(s.ns)");
-        let l = 9 * params.parameters.len() + 15;
-        println!("{}", (0..l).map(|_| "-").collect::<String>()) ;
+
+        let mut indexes = vec![0; params.len()];
         loop {
             // Fill in parameters
             //            let mut context = tera::Context::new();
@@ -139,11 +136,14 @@ impl Tuner {
             if failed.is_none() {
                 // Run the kernel
                 let time = self.run_single_kernel(runs, &wrapper, &params, &config, &buffers);
+                // Configuration parameters in order
+                let ordered = params.parameters.iter().map(|&(ref k, _)| config[k]).collect();
                 // Print time
-                for k in params.parameters.iter().map(|&(ref k, _)| k) {
-                    print!("|{:>8}", config[k]);
+                if let Some(f) = log_file.as_mut() {
+                    Tuner::write_parameters(ordered, time, f).expect("Writing parameters failed.");
+                } else {
+                    Tuner::print_parameters(ordered, time);
                 }
-                println!("|{:>3}.{:<09}|", time.as_secs(), time.subsec_nanos());
             }
             // Facilitate iteration over all possible combinations
             let mut last: i32 = indexes.len() as i32 - 1;
@@ -209,6 +209,48 @@ impl Tuner {
             times.push(Duration::new(time / 1000000000, (time % 1000000000) as u32));
         }
         times.iter().sum::<Duration>() / runs
+    }
+
+    fn print_header(parameters: &Vec<(String, Vec<i32>)>) {
+        for &(ref k, _) in parameters {
+            if k.len() > 8 {
+                print!("|{:^8}", &k[0..8]);
+            } else {
+                print!("|{:^8}", k);
+            }
+        }
+        println!("|{:^13}|", "Time(s.ns)");
+        let l = 9 * parameters.len() + 15;
+        println!("{}", (0..l).map(|_| "-").collect::<String>());
+    }
+
+    fn write_header(parameters: &Vec<(String, Vec<i32>)>, f: &mut Write)
+        -> ::std::io::Result<()> {
+        for &(ref k, _) in parameters {
+            if k.len() > 8 {
+                write!(f, "{:^8}, ", &k[0..8])?;
+            } else {
+                write!(f, "{:^8}, ", k)?;
+            }
+        }
+        writeln!(f, "{:^13}", "Time(s.ns)")
+    }
+
+    fn print_parameters(parameters: Vec<i32>, time: Duration) {
+        // Print time
+        for value in parameters {
+            print!("|{:>8}", value);
+        }
+        println!("|{:>3}.{:<09}|", time.as_secs(), time.subsec_nanos());
+    }
+
+    fn write_parameters(parameters: Vec<i32>, time: Duration, f: &mut Write)
+        -> ::std::io::Result<()> {
+        // Print time
+        for value in parameters {
+            write!(f, "{:>8}, ", value)?;
+        }
+        writeln!(f, "{:>3}.{:<09}", time.as_secs(), time.subsec_nanos())
     }
 
     fn calculate_work_sizes(wrapper: &KernelWrapper,
