@@ -15,6 +15,21 @@ parameters, such that any invalid configurations on the grid can be skipped,
 as well as functions hooks for calculating the required local memory for 
 skipping configurations which go over the maximum allowed on the device.
 
+## Why rewrite CLTune?
+
+There are two main reasons I wanted to do this. 
+
+First, I was writing a library in Rust which uses OpenCL and needs to be 
+as fast as possible. 
+
+Second, I do like a lot more the safe wrappers of the [ocl](https://github.com/cogciprocate/ocl)
+crate around OpenCL handles and manipulation. Additionally, I think Cargo and Rust
+provide a much more pleasant experience around downloading and running code 
+compare to C++.
+
+Finally, I like programming in Rust a lot and this looked like a great way
+to implement something useful. 
+
 
 ## Examples
 
