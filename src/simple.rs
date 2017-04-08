@@ -59,13 +59,14 @@ impl SimpleBuilder {
             let v = self.parameters[&s].clone();
             (s, v)
         }).collect();
-        let mut constraints: Vec<Constraint<'static>> = Vec::new();
+        let mut constraints: Vec<FnWrap<'static, bool>> = Vec::new();
         fn multiple_of_x(v: &[i32]) -> bool { v[1] % v[0] == 0 };
-        constraints.push(Constraint{func: multiple_of_x,
+        constraints.push(FnWrap {func: multiple_of_x,
             args: vec!["VALUE1", "VALUE2"]});
         Ok(ParameterSet{
             parameters: parameters,
             constraints: constraints,
+            local_memory_needed: None,
             mul_global_size: None,
             mul_local_size: None,
             div_global_size: None})

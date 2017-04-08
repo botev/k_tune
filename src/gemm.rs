@@ -151,31 +151,50 @@ impl GemmBuilder {
             let v = self.parameters[&s].clone();
             (s, v)
         }).collect();
-        let mut constraints: Vec<Constraint<'static>> = Vec::new();
+        let mut constraints: Vec<FnWrap<'static, bool>> = Vec::new();
         fn multiple_of_x(v: &[i32]) -> bool { v[0] % v[1] == 0 }
         fn multiple_of_x_mul_y(v: &[i32]) -> bool { v[0] % (v[1] * v[2]) == 0 }
         fn multiple_of_x_mul_y_div_z(v: &[i32]) -> bool { v[0] % ((v[1] * v[2]) / v[3]) == 0 }
 
         // Sets constraints: Requirement for unrolling the KWG loop
-        constraints.push(Constraint{func: multiple_of_x, args: vec!["KWG", "KWI"]});
+        constraints.push(FnWrap {func: multiple_of_x, args: vec!["KWG", "KWI"]});
 
         // Sets constraints: Required for integer MWI and NWI
-        constraints.push(Constraint{func: multiple_of_x_mul_y, args: vec!["MWG", "MDIMC", "VWM"]});
-        constraints.push(Constraint{func: multiple_of_x_mul_y, args: vec!["NWG", "NDIMC", "VWN"]});
+        constraints.push(FnWrap {func: multiple_of_x_mul_y, args: vec!["MWG", "MDIMC", "VWM"]});
+        constraints.push(FnWrap {func: multiple_of_x_mul_y, args: vec!["NWG", "NDIMC", "VWN"]});
 
         // Sets constraints: Required for integer MWIA and NWIB
-        constraints.push(Constraint{func: multiple_of_x_mul_y, args: vec!["MWG", "MDIMA", "VWM"]});
-        constraints.push(Constraint{func: multiple_of_x_mul_y, args: vec!["NWG", "NDIMB", "VWN"]});
+        constraints.push(FnWrap {func: multiple_of_x_mul_y, args: vec!["MWG", "MDIMA", "VWM"]});
+        constraints.push(FnWrap {func: multiple_of_x_mul_y, args: vec!["NWG", "NDIMB", "VWN"]});
 
         // Sets constraints: KWG has to be a multiple of KDIMA = ((MDIMC*NDIMC)/(MDIMA)) and KDIMB = (...)
-        constraints.push(Constraint{func: multiple_of_x_mul_y_div_z,
+        constraints.push(FnWrap {func: multiple_of_x_mul_y_div_z,
             args: vec!["KWG", "MDIMC", "NDIMC", "MDIMA"]});
-        constraints.push(Constraint{func: multiple_of_x_mul_y_div_z,
+        constraints.push(FnWrap {func: multiple_of_x_mul_y_div_z,
             args: vec!["KWG", "MDIMC", "NDIMC", "NDIMB"]});
+
+        // SA * KWG * MWG / VWM + SB * KWG * NWG / VWN
+        // Arguments are ordered as MWG, NWG, KWG, VWM, VWN, SA, SB, PRECISION
+        fn calc_local_memory(v: &[i32]) -> i32 {
+            let mwg = v[0];
+            let nwg = v[1];
+            let kwg = v[2];
+            let vwm = v[3];
+            let vwn = v[4];
+            let sa = v[5];
+            let sb = v[6];
+            let p = v[7];
+            (sa *  mwg / vwm + sb * nwg / vwn) * kwg * (p / 8)
+        }
+        let local_memory_needed = FnWrap{
+            func: calc_local_memory,
+            args: vec!["MWG", "NWG", "KWG", "VWM", "VWN", "SA", "SB", "PRECISION"]
+        };
 
         Ok(ParameterSet{
             parameters: parameters,
             constraints: constraints,
+            local_memory_needed: Some(local_memory_needed),
             mul_global_size: Some(vec![Some("MDIMC".into()), Some("NDIMC".into())]),
             mul_local_size: Some(vec![Some("MDIMC".into()), Some("NDIMC".into())]),
             div_global_size: Some(vec![Some("MWG".into()), Some("NWG".into())])

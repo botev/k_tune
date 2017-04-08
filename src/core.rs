@@ -7,14 +7,14 @@ use std::io::Write;
 use ocl::{Platform, Context, Device, Queue, Event,
           Program, Kernel, Buffer, SpatialDims};
 use ocl::flags::CommandQueueProperties;
-use ocl::enums::ProfilingInfo;
+use ocl::enums::{ProfilingInfo, DeviceInfo, DeviceInfoResult};
 use futures::future::Future;
-
 
 #[derive(Clone)]
 pub struct ParameterSet<'a> {
     pub parameters: Vec<(String, Vec<i32>)>,
-    pub constraints: Vec<Constraint<'a>>,
+    pub constraints: Vec<FnWrap<'a, bool>>,
+    pub local_memory_needed: Option<FnWrap<'a, i32>>,
     pub mul_local_size: Option<Vec<Option<String>>>,
     pub mul_global_size: Option<Vec<Option<String>>>,
     pub div_global_size: Option<Vec<Option<String>>>,
@@ -88,7 +88,7 @@ impl Tuner {
 
     pub fn tune(&self, wrapper: KernelWrapper,
                 params: ParameterSet,
-                runs: u32, log_file: Option<&str>) {
+                runs: usize, log_file: Option<&str>) {
         let mut log_file = log_file.map(|x| ::std::fs::File::create(x).unwrap());
         // Generate buffers
         let buffers: Vec<Buffer<f32>> = wrapper.inputs_dims.iter().map(|&(ref r, ref c)|
@@ -106,11 +106,14 @@ impl Tuner {
 
         if let Some(f) = log_file.as_mut() {
             Tuner::write_header(&params.parameters, f).expect("Writing header failed.");
-        } else {
-            Tuner::print_header(&params.parameters);
         }
+        Tuner::print_header(&params.parameters);
 
         let mut indexes = vec![0; params.len()];
+        let local_memory_limit = match self.device.info(DeviceInfo::LocalMemSize) {
+            DeviceInfoResult::LocalMemSize(s) => s,
+            _ => unreachable!()
+        };
         loop {
             // Fill in parameters
             //            let mut context = tera::Context::new();
@@ -120,30 +123,40 @@ impl Tuner {
                 .map(|(&(ref key, ref values), &i)| {
                     let v = values[i];
                     //                    context.add(&key, &v);
-//                    print!("|{:>10}", v);
+                    //                    print!("|{:>10}", v);
                     (key.clone(), v)
                 }).collect();
 
             // Verify constraints
-            let mut failed = None;
+            let mut failed = false;
             for (i, constraint) in params.constraints.iter().enumerate() {
                 let args: Vec<_> = constraint.args.iter().map(|&x| config[x]).collect();
                 if ! (constraint.func)(&args) {
-                    failed = Some(i);
+                    writeln!(&mut ::std::io::stderr(), "Constrain {} has failed.", i).unwrap();
+                    failed = true;
                     break;
                 }
             }
-            if failed.is_none() {
+            if let Some(ref local_memory) = params.local_memory_needed {
+                let args: Vec<_> = local_memory.args.iter().map(|&x| config[x]).collect();
+                let needed = (local_memory.func)(&args) as u64;
+                if local_memory_limit < needed {
+                    writeln!(&mut ::std::io::stderr(),
+                             "Setting exceeds maximum local memory - {}/{}.",
+                             needed, local_memory_limit).unwrap();
+                    failed = true;
+                }
+            }
+            if ! failed {
                 // Run the kernel
                 let time = self.run_single_kernel(runs, &wrapper, &params, &config, &buffers);
                 // Configuration parameters in order
                 let ordered = params.parameters.iter().map(|&(ref k, _)| config[k]).collect();
                 // Print time
                 if let Some(f) = log_file.as_mut() {
-                    Tuner::write_parameters(ordered, time, f).expect("Writing parameters failed.");
-                } else {
-                    Tuner::print_parameters(ordered, time);
+                    Tuner::write_parameters(&ordered, time, f).expect("Writing parameters failed.");
                 }
+                Tuner::print_parameters(&ordered, time);
             }
             // Facilitate iteration over all possible combinations
             let mut last: i32 = indexes.len() as i32 - 1;
@@ -161,7 +174,7 @@ impl Tuner {
         }
     }
 
-    fn run_single_kernel(&self, runs: u32,  wrapper: &KernelWrapper,
+    fn run_single_kernel(&self, runs: usize,  wrapper: &KernelWrapper,
                          params: &ParameterSet,
                          config: &HashMap<String, i32>,
                          buffers: &[Buffer<f32>]) -> Duration {
@@ -184,6 +197,7 @@ impl Tuner {
             .gws(gws)
             .lws(lws);
 
+        println!("GWS: {:?}, LWS: {:?}", gws, lws);
         // Add arguments
         for &i in &wrapper.scalar_inputs {
             kernel = kernel.arg_scl(i);
@@ -208,7 +222,7 @@ impl Tuner {
             let time = command_end - command_start;
             times.push(Duration::new(time / 1000000000, (time % 1000000000) as u32));
         }
-        times.iter().sum::<Duration>() / runs
+        times.iter().sum::<Duration>() / (runs as u32)
     }
 
     fn print_header(parameters: &Vec<(String, Vec<i32>)>) {
@@ -225,7 +239,7 @@ impl Tuner {
     }
 
     fn write_header(parameters: &Vec<(String, Vec<i32>)>, f: &mut Write)
-        -> ::std::io::Result<()> {
+                    -> ::std::io::Result<()> {
         for &(ref k, _) in parameters {
             if k.len() > 8 {
                 write!(f, "{:^8}, ", &k[0..8])?;
@@ -236,7 +250,7 @@ impl Tuner {
         writeln!(f, "{:^13}", "Time(s.ns)")
     }
 
-    fn print_parameters(parameters: Vec<i32>, time: Duration) {
+    fn print_parameters(parameters: &Vec<i32>, time: Duration) {
         // Print time
         for value in parameters {
             print!("|{:>8}", value);
@@ -244,8 +258,8 @@ impl Tuner {
         println!("|{:>3}.{:<09}|", time.as_secs(), time.subsec_nanos());
     }
 
-    fn write_parameters(parameters: Vec<i32>, time: Duration, f: &mut Write)
-        -> ::std::io::Result<()> {
+    fn write_parameters(parameters: &Vec<i32>, time: Duration, f: &mut Write)
+                        -> ::std::io::Result<()> {
         // Print time
         for value in parameters {
             write!(f, "{:>8}, ", value)?;
@@ -328,21 +342,22 @@ impl Tuner {
     }
 }
 
-type TypeFn = fn(&[i32]) -> bool;
+type TypeFn<T> = fn(&[i32]) -> T;
 
-pub struct Constraint<'a> {
-    pub func: TypeFn,
+pub struct FnWrap<'a, T> {
+    pub func: TypeFn<T>,
     pub args: Vec<&'a str>
 }
 
-impl<'a> Clone for Constraint<'a> {
+impl<'a, T> Clone for FnWrap<'a, T> {
     fn clone(&self) -> Self {
-        Constraint {
+        FnWrap {
             func: self.func,
             args: self.args.clone()
         }
     }
 }
+
 
 pub fn is_power_of_two(value: &usize) -> bool {
     value & (value - 1) == 0
